@@ -172,21 +172,32 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
         if body.get("stream"):
             def generate():
                 buffered: list[str] = []
-                state = {"decided": False, "live": False}
+                state = {"decided": False, "live": False, "stopped": False}
                 queue: list[str] = []
 
                 def on_delta(chunk: str):
+                    """Forward text, but never let a tool-call payload reach the user.
+
+                    The model may open with prose ("Let me look that up.") and
+                    only then emit the fence, so the decision cannot be made
+                    once from the first chunk -- it has to stay revisable.
+                    Streaming stops the moment a payload starts; the prose
+                    already sent reads as a status line, which is harmless.
+                    """
                     buffered.append(chunk)
+                    whole = "".join(buffered)
+                    if state["stopped"]:
+                        return
+                    if translate.payload_has_begun(whole):
+                        state["stopped"] = True
+                        return
                     if not state["decided"]:
-                        head = "".join(buffered).lstrip()
-                        if not head:
+                        if not whole.strip():
                             return
-                        # Only start streaming once we know it is not a tool call.
                         state["decided"] = True
-                        state["live"] = not translate.looks_like_json(head)
-                        if state["live"]:
-                            queue.append("".join(buffered))
-                    elif state["live"]:
+                        state["live"] = True
+                        queue.append(whole)
+                    else:
                         queue.append(chunk)
 
                 with limiter.slot(session_key):

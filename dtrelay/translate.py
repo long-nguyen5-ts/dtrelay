@@ -90,33 +90,70 @@ def looks_like_json(prefix: str) -> bool:
     return s.startswith("```") or s.startswith("{")
 
 
-def _candidate(text: str) -> str | None:
-    """The JSON payload of a tool-call reply, or None if this is prose.
+def payload_has_begun(text: str) -> bool:
+    """Has a tool-call payload started in the text streamed so far?
 
-    The whole reply must BE the payload -- a lone fenced block, or a bare JSON
-    object. A fence merely appearing inside prose is a code example, not a tool
-    call: searching anywhere made every tutoring answer that contained a code
-    block burn a corrective retry. See tests/test_prose_with_fences.py.
+    Used to cut streaming off mid-reply, so a payload never reaches the user
+    even when the model prefaces it with prose.
     """
+    stripped = text.lstrip()
+    return (
+        stripped.startswith("```")
+        or stripped.startswith("{")
+        or "```" in text
+        or "tool_calls" in text
+    )
+
+
+def _json_candidates(text: str) -> list[str]:
+    """Every substring of a reply that might be the tool-call payload.
+
+    Position is not the signal -- content is. The model wraps calls in prose
+    ("Let me look that up." before the fence) and it writes code fences inside
+    ordinary answers, so neither "starts with {" nor "is entirely a fence"
+    separates the two. We gather every plausible payload and let the presence
+    of a tool_calls key decide. See tests/test_reply_shapes.py for both
+    failure modes this balances.
+    """
+    out: list[str] = []
+    out.extend(_FENCE.findall(text))
     stripped = text.strip()
-    m = _FENCE.fullmatch(stripped)
-    if m:
-        return m.group(1)
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
+    if stripped:
+        out.append(stripped)
+    first, last = text.find("{"), text.rfind("}")
+    if first != -1 and last > first:
+        out.append(text[first:last + 1])
+    return out
+
+
+def _extract_calls(text: str) -> list | None:
+    """The tool_calls array from a reply, or None if this reply is prose."""
+    for raw in _json_candidates(text):
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            calls = payload.get("tool_calls")
+            if isinstance(calls, list) and calls:
+                return calls
     return None
 
 
+def _looks_like_a_failed_attempt(text: str) -> bool:
+    """Did the model TRY to call a tool and botch the JSON?
+
+    Only then is a corrective retry worth a round trip. Ordinary prose that
+    happens to contain a fence must never trigger one.
+    """
+    return "tool_calls" in text
+
+
 def parse_reply(text: str, tools: list[dict]) -> ParsedReply:
-    raw = _candidate(text)
-    if raw is None:
-        return ParsedReply(content=text)
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as e:
-        return ParsedReply(error=f"reply was not valid JSON: {e}")
-    calls = payload.get("tool_calls") if isinstance(payload, dict) else None
-    if not isinstance(calls, list) or not calls:
+    calls = _extract_calls(text)
+    if calls is None:
+        if _looks_like_a_failed_attempt(text):
+            return ParsedReply(error="a tool_calls payload was present but unparseable")
         return ParsedReply(content=text)
 
     by_name = {
