@@ -194,11 +194,26 @@ curl -s http://127.0.0.1:8001/api/settings/catalog | python3 -c \
 The embedding `base_url` is missing `/embeddings`. See step 4.
 
 **`Session already has an active or recovering turn`**
-Not a bug. DeepTutor's `turns` table has a unique partial index allowing one
-active turn per session. Relay turns run 20–70 s, longer than the 30 s lease in
-`data/user/settings/integrations.json` (`turn_coordination.lease_ttl_seconds`),
-so a slow turn can be declared lost and enter recovery. Give a turn time to
-settle before sending the next one, or raise the TTL.
+Not a bug, and **do not raise `lease_ttl_seconds` to fix it** — that makes it
+worse, not better.
+
+The error is raised when `coordinator.acquire_turn()` returns `None`, meaning
+the previous turn still holds the per-session lease (keyed
+`{scope}:{session_id}`). A turn keeps that lease through finalization, which
+includes the background title-generation turn, so the session stays locked for
+a few seconds after you receive `done`.
+
+Measured on this setup: a follow-up was accepted **6 s** after the previous
+turn's `done`. The lease is released normally; it is not expiring, so a longer
+TTL would only extend the window in the cases where it *is* held.
+
+The fix is client-side: retry with a short backoff rather than sending the next
+turn instantly. DeepTutor's own UI does this. Only a hand-rolled WebSocket
+client hits the error.
+
+Note the lease is renewed by a separate task every `min(10, ttl/3)` seconds
+while a turn runs, so a slow turn does not lose its lease on a healthy event
+loop — a 70 s turn is renewed seven times.
 
 **The turn hangs and the whole API stops responding**
 Seen after a series of long turns: 0 % CPU, no connections to the relay, even
