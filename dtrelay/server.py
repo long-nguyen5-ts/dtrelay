@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from dtrelay import runner as runner_mod
 from dtrelay import translate
 from dtrelay.config import MODEL_ID, Settings
+from dtrelay.embeddings import EMBED_DIM, EMBED_MODEL_ID, embed_texts, normalize_input
 from dtrelay.limits import Limiter
 from dtrelay.sessions import SessionStore, fingerprint_chain
 
@@ -77,8 +78,38 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
     @app.get("/v1/models")
     def models():
         return {"object": "list", "data": [
-            {"id": MODEL_ID, "object": "model", "owned_by": "dtrelay"}
+            {"id": MODEL_ID, "object": "model", "owned_by": "dtrelay"},
+            {"id": EMBED_MODEL_ID, "object": "model", "owned_by": "dtrelay"},
         ]}
+
+    @app.post("/v1/embeddings")
+    def embeddings(body: dict):
+        """Local ONNX embeddings -- Claude Code cannot produce vectors.
+
+        Without this, DeepTutor's knowledge bases would need an API key purely
+        for indexing, which would defeat the point of the relay.
+        """
+        try:
+            texts = normalize_input(body.get("input"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        try:
+            vectors = embed_texts(texts)
+        except Exception as exc:  # model load or inference failure
+            log.error("embedding failed: %s", exc, exc_info=True)
+            raise HTTPException(500, f"embedding failed: {exc}") from exc
+        return {
+            "object": "list",
+            "model": EMBED_MODEL_ID,
+            "data": [
+                {"object": "embedding", "index": i, "embedding": v}
+                for i, v in enumerate(vectors)
+            ],
+            "usage": {
+                "prompt_tokens": sum(len(t.split()) for t in texts),
+                "total_tokens": sum(len(t.split()) for t in texts),
+            },
+        }
 
     @app.post("/v1/chat/completions")
     def completions(body: dict):

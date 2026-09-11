@@ -91,11 +91,20 @@ def looks_like_json(prefix: str) -> bool:
 
 
 def _candidate(text: str) -> str | None:
-    m = _FENCE.search(text)
+    """The JSON payload of a tool-call reply, or None if this is prose.
+
+    The whole reply must BE the payload -- a lone fenced block, or a bare JSON
+    object. A fence merely appearing inside prose is a code example, not a tool
+    call: searching anywhere made every tutoring answer that contained a code
+    block burn a corrective retry. See tests/test_prose_with_fences.py.
+    """
+    stripped = text.strip()
+    m = _FENCE.fullmatch(stripped)
     if m:
         return m.group(1)
-    s = text.strip()
-    return s if s.startswith("{") else None
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return stripped
+    return None
 
 
 def parse_reply(text: str, tools: list[dict]) -> ParsedReply:
