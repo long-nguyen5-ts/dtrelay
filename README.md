@@ -17,6 +17,11 @@ Code runs with its own tools disabled so it reasons instead of acts.
 
 ## Wire up DeepTutor
 
+Full step-by-step guide, including the embedding-URL gotcha and
+troubleshooting: **[docs/DEEPTUTOR-SETUP.md](docs/DEEPTUTOR-SETUP.md)**.
+
+In short:
+
 **llm** service — Custom binding, base_url `http://127.0.0.1:8787/v1`, key
 `dummy`, model `claude-code`.
 
@@ -42,4 +47,8 @@ embedding adapter does not append it), key `dummy`, model
   are not.
 - Embeddings run locally on CPU and never touch the subscription.
 
-Design: `docs/superpowers/specs/2026-09-11-claude-code-relay-design.md`
+## Docs
+
+- [docs/DEEPTUTOR-SETUP.md](docs/DEEPTUTOR-SETUP.md) — how to point DeepTutor at the relay
+- `docs/superpowers/specs/2026-09-11-claude-code-relay-design.md` — the design and why it works
+- `tasks/todo.md` — the implementation plan and its review
