@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 
@@ -86,6 +87,16 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
         if not messages:
             raise HTTPException(400, "messages is required")
 
+        if os.environ.get("DTRELAY_DUMP"):
+            with open(os.environ["DTRELAY_DUMP"], "a") as fh:
+                fh.write(json.dumps([
+                    {"role": m.get("role"), "name": m.get("name"),
+                     "tool_call_id": m.get("tool_call_id"),
+                     "has_tool_calls": bool(m.get("tool_calls")),
+                     "content": m.get("content")}
+                    for m in messages
+                ], default=str) + "\n")
+
         session_id, prefix_len = store.lookup(messages)
         delta = messages[prefix_len:] if session_id else messages
         if not delta:
@@ -112,12 +123,20 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
             return retry, reparsed
 
         def _persist(result, parsed):
-            if result.session_id:
-                store.remember(
-                    messages + [{"role": "assistant",
-                                 "content": parsed.content or result.text}],
-                    result.session_id,
-                )
+            """Record the prefix as the CLIENT will send it back next round.
+
+            After a tool call DeepTutor echoes the assistant turn with empty
+            content and a tool_calls array -- not the raw JSON the model
+            emitted. Storing the raw JSON made every round miss and start a
+            cold session. See tests/test_session_reuse.py.
+            """
+            if not result.session_id:
+                return
+            echoed = "" if parsed.tool_calls else (parsed.content or result.text)
+            store.remember(
+                messages + [{"role": "assistant", "content": echoed}],
+                result.session_id,
+            )
 
         if body.get("stream"):
             def generate():

@@ -1932,4 +1932,56 @@ git add -A && git commit -q -m "feat: entrypoint, lifecycle scripts, smoke test,
 
 ## Review
 
-_(fill in after execution)_
+**Status: complete and verified live on 2026-09-11.**
+
+All 9 tasks executed. 54 hermetic tests pass (fake CLI, no network) plus 2
+opt-in real-CLI smoke tests.
+
+### Verified end to end
+
+| Check | Evidence |
+|---|---|
+| Relay serves OpenAI wire format | `/healthz`, `/v1/models`, `/v1/chat/completions` all 200 |
+| Tool translation over HTTP | tool schema in -> `finish_reason: "tool_calls"`, args as JSON string |
+| DeepTutor reaches the relay | `/api/system/test/llm` -> `success: true`, model `claude-code` |
+| Full tutoring turn | live WS turn: `tool_call(web_search)` -> `tool_result` -> `result` |
+| DeepTutor dispatches its OWN tools | `web_search` fired with translated args, sources returned |
+| Session resume | round 2 logs `claude run (session=dac1c810-...)` |
+| Runs on the subscription | no `ANTHROPIC_API_KEY` in env; spawned `claude` uses `~/.claude` OAuth |
+
+### Deviations from the plan
+
+1. **Sync/threaded, not async.** `pytest-asyncio` is absent from the host
+   environment; threads match kaide's proven model and keep every unit
+   testable. Spec updated to match.
+2. **`lifespan` instead of `@app.on_event("startup")`**, which FastAPI 0.141
+   deprecates.
+3. **`_resolve` / `_persist` extracted** in `server.py` so the streaming and
+   non-streaming paths share one copy of the corrective-retry and persistence
+   logic instead of duplicating it as the plan sketched.
+4. **`POST /api/settings/apply/service`** used to configure DeepTutor rather
+   than a whole-catalog `PUT`, so only the `llm` service was touched.
+5. **`DTRELAY_DUMP` debug hook added** to `server.py` -- env-gated capture of
+   incoming message arrays. Kept because it is what diagnosed the bug below.
+
+### Bug found and fixed during verification
+
+The plan's own integration test passed while the feature was broken. The
+`FakeRunner` echoed back exactly what the relay had stored, so the fingerprint
+always matched; real DeepTutor does not.
+
+After a tool call, DeepTutor echoes the assistant turn back with **empty
+content** plus a `tool_calls` array. The relay had persisted that turn as the
+raw JSON the model emitted, so every fingerprint missed and **every round
+started a cold session** -- 8 distinct sessions for what should have been one,
+each paying a full agent boot and re-sending the whole conversation.
+
+Caught by inspecting `bot.log` (`session=new` on every line) rather than by the
+test suite. Fixed in `_persist`; regression test in `tests/test_session_reuse.py`
+built from the captured live payload, not from an assumption.
+
+### Known limitations (unchanged from the spec)
+
+- Embeddings are not served; knowledge bases need Ollama or an API key.
+- Subagent consults spawn outside the relay and share the plan window.
+- Fixed agent-prompt cost per call; multi-round turns are slow (~10s/round).
