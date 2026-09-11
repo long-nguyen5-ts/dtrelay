@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 
 import jsonschema
+from json_repair import repair_json
 
 from dtrelay.sessions import _text
 
@@ -76,6 +77,29 @@ def to_prompt(delta_messages: list[dict]) -> str:
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
+# The quoted JSON key, not the bare word: a tutoring answer may discuss
+# "tool_calls" in prose and must never be treated as a botched call.
+_PAYLOAD_KEY = '"tool_calls"'
+
+
+def _loads(raw: str):
+    """Parse a candidate, repairing it only if it really is a payload.
+
+    Large ask_user payloads have come back truncated mid-string, which strict
+    json.loads cannot recover. Repair is gated on the payload key so ordinary
+    prose is never coerced into a tool call.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    if _PAYLOAD_KEY not in raw:
+        return None
+    try:
+        return json.loads(repair_json(raw))
+    except Exception:
+        return None
+
 
 @dataclass
 class ParsedReply:
@@ -123,16 +147,17 @@ def _json_candidates(text: str) -> list[str]:
     first, last = text.find("{"), text.rfind("}")
     if first != -1 and last > first:
         out.append(text[first:last + 1])
+    # A truncated payload has an opening brace and no usable closing one; keep
+    # the tail so the repair pass has something to work with.
+    if first != -1:
+        out.append(text[first:])
     return out
 
 
 def _extract_calls(text: str) -> list | None:
     """The tool_calls array from a reply, or None if this reply is prose."""
     for raw in _json_candidates(text):
-        try:
-            payload = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            continue
+        payload = _loads(raw)
         if isinstance(payload, dict):
             calls = payload.get("tool_calls")
             if isinstance(calls, list) and calls:
@@ -146,7 +171,31 @@ def _looks_like_a_failed_attempt(text: str) -> bool:
     Only then is a corrective retry worth a round trip. Ordinary prose that
     happens to contain a fence must never trigger one.
     """
-    return "tool_calls" in text
+    return _PAYLOAD_KEY in text
+
+
+def strip_payload(text: str) -> str:
+    """Remove any tool-call payload, keeping the prose around it.
+
+    Used when a tool call cannot be salvaged and the turn degrades to prose.
+    Showing the raw payload is what the user experiences as "the tutor replied
+    with JSON", so it is removed even when it is unparseable. A fenced block
+    that is not a payload (a code example in an answer) is left alone.
+    """
+    def drop(match):
+        body = match.group(1)
+        return "" if "tool_calls" in body else match.group(0)
+
+    out = _FENCE.sub(drop, text)
+    stripped = out.strip()
+    if "tool_calls" in stripped:
+        first, last = stripped.find("{"), stripped.rfind("}")
+        if first != -1 and last > first:
+            out = (stripped[:first] + stripped[last + 1:])
+        elif first != -1:
+            # Truncated payload with no closing brace - drop the tail.
+            out = stripped[:first]
+    return "\n\n".join(part for part in out.split("\n\n") if part.strip()).strip()
 
 
 def parse_reply(text: str, tools: list[dict]) -> ParsedReply:

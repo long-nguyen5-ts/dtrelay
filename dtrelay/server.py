@@ -24,6 +24,11 @@ from dtrelay.stream_gate import StreamGate
 
 log = logging.getLogger(__name__)
 
+FALLBACK = (
+    "I hit a snag setting up that step. Could you tell me again what you would "
+    "like to work on?"
+)
+
 CORRECTION = (
     "Your previous reply was rejected: {error}\n"
     "This is a corrective retry. Reply with ONLY the fenced json tool_calls "
@@ -141,19 +146,26 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
         # conversation has no contention to protect against yet.
         session_key = session_id or fingerprint_chain(messages)[-1]
 
+        def _degrade(result):
+            """Give up on the tool call without showing the user the payload."""
+            content = translate.strip_payload(result.text)
+            return translate.ParsedReply(content=content or FALLBACK)
+
         def _resolve(result):
             """Parse, and on a contract violation take one corrective retry."""
             parsed = translate.parse_reply(result.text, tools)
             if not parsed.error:
                 return result, parsed
-            log.info("corrective retry: %s", parsed.error)
+            log.info("corrective retry: %s | reply was: %s",
+                     parsed.error, result.text[:400].replace("\n", " "))
             retry = run(settings, CORRECTION.format(error=parsed.error),
                         result.session_id, system_prompt)
             if retry.is_error:
-                return result, translate.ParsedReply(content=result.text)
+                return result, _degrade(result)
             reparsed = translate.parse_reply(retry.text, tools)
             if reparsed.error:
-                return retry, translate.ParsedReply(content=retry.text)
+                log.info("degrading after second failure: %s", reparsed.error)
+                return retry, _degrade(retry)
             return retry, reparsed
 
         def _persist(result, parsed):

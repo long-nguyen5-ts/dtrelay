@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+jsonschema
+json-repair
+fastembed
