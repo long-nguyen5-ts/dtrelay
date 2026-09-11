@@ -1980,8 +1980,20 @@ Caught by inspecting `bot.log` (`session=new` on every line) rather than by the
 test suite. Fixed in `_persist`; regression test in `tests/test_session_reuse.py`
 built from the captured live payload, not from an assumption.
 
-### Known limitations (unchanged from the spec)
+### Follow-up work (2026-09-11, after the plan closed)
 
-- Embeddings are not served; knowledge bases need Ollama or an API key.
+**Knowledge bases now work.** `dtrelay/embeddings.py` serves `/v1/embeddings`
+from a local ONNX model (BAAI/bge-small-en-v1.5, 384 dims, CPU, ~130MB), so the
+spec's hardest carve-out is closed and the system needs no API key at all.
+Verified by indexing a document containing a planted fictional marker and
+confirming the tutor retrieved it.
+
+**Second bug found in production.** `_candidate()` searched for a code fence
+anywhere in a reply, so any tutoring answer containing a code block was
+misparsed as a failed tool call and burned a ~60s corrective retry. Six fired
+before it was caught in `bot.log`. Fixed: the whole reply must BE the payload.
+
+### Known limitations (remaining)
+
 - Subagent consults spawn outside the relay and share the plan window.
 - Fixed agent-prompt cost per call; multi-round turns are slow (~10s/round).

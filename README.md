@@ -5,7 +5,8 @@ with no API key. Each DeepTutor conversation is bound to a Claude Code session;
 DeepTutor's tool schemas are translated into a JSON reply contract, and Claude
 Code runs with its own tools disabled so it reasons instead of acts.
 
-    DeepTutor ─► http://127.0.0.1:8787/v1 ─► claude -p --resume <sid>
+    DeepTutor ─► http://127.0.0.1:8787/v1/chat/completions ─► claude -p --resume <sid>
+              ─► http://127.0.0.1:8787/v1/embeddings      ─► local ONNX (bge-small-en-v1.5)
 
 ## Run
 
@@ -16,8 +17,13 @@ Code runs with its own tools disabled so it reasons instead of acts.
 
 ## Wire up DeepTutor
 
-Settings ▸ Catalog ▸ Custom: base_url `http://127.0.0.1:8787/v1`, key `dummy`.
-Set `claude-code` active for the **llm** service.
+**llm** service — Custom binding, base_url `http://127.0.0.1:8787/v1`, key
+`dummy`, model `claude-code`.
+
+**embedding** service — Custom binding, base_url
+`http://127.0.0.1:8787/v1/embeddings` (the FULL path, not the base — the
+embedding adapter does not append it), key `dummy`, model
+`bge-small-en-v1.5`, dim 384.
 
 ## Tests
 
@@ -26,10 +32,11 @@ Set `claude-code` active for the **llm** service.
 
 ## Limits
 
-- Embeddings are not served — knowledge bases need Ollama or an API key.
 - Subagent consults spawn outside the relay and share the plan window; keep
   `consult_budget` low.
-- Each call carries Claude Code's agent system prompt, so cost per call is
-  roughly flat regardless of prompt size.
+- A cold call costs ~$0.16 (the agent system prompt is written to cache);
+  resumed calls cost ~$0.013. Long conversations are cheap, many short ones
+  are not.
+- Embeddings run locally on CPU and never touch the subscription.
 
 Design: `docs/superpowers/specs/2026-09-11-claude-code-relay-design.md`
