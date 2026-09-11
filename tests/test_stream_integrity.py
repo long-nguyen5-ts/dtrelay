@@ -76,3 +76,25 @@ def test_a_tool_call_with_a_preamble_never_leaks_json(tmp_path):
     assert "{" not in text, "not even a fragment of the payload"
     assert calls, "the call must still be dispatched"
     assert finish == ["tool_calls"]
+
+
+def test_long_prose_arrives_as_many_chunks_not_one_blob(tmp_path):
+    """Regression: the relay used to collect the whole reply before emitting.
+
+    run() is blocking, so the old generator accumulated every delta and sent a
+    single chunk at the end -- streaming in name only. Deltas now cross a queue
+    from a worker thread, so the client sees text progressively.
+    """
+    answer = "Photosynthesis converts light energy into chemical energy. " * 6
+    app = create_app(Settings(state_dir=tmp_path), runner=ChunkRunner(answer, size=11))
+    r = TestClient(app).post("/v1/chat/completions", json={
+        "model": "claude-code",
+        "messages": [{"role": "user", "content": "q"}],
+        "stream": True,
+    })
+    events = [json.loads(l[6:]) for l in r.text.splitlines()
+              if l.startswith("data: ") and l[6:].strip() != "[DONE]"]
+    content_chunks = [e["choices"][0]["delta"].get("content") for e in events
+                      if e["choices"][0]["delta"].get("content")]
+    assert len(content_chunks) > 3, f"expected progressive chunks, got {len(content_chunks)}"
+    assert "".join(content_chunks) == answer, "no loss, no duplication"

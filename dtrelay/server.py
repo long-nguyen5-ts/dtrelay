@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue as queuelib
+import threading
 import time
 import uuid
 
@@ -18,6 +20,7 @@ from dtrelay.config import MODEL_ID, Settings
 from dtrelay.embeddings import EMBED_DIM, EMBED_MODEL_ID, embed_texts, normalize_input
 from dtrelay.limits import Limiter
 from dtrelay.sessions import SessionStore, fingerprint_chain
+from dtrelay.stream_gate import StreamGate
 
 log = logging.getLogger(__name__)
 
@@ -171,38 +174,45 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
 
         if body.get("stream"):
             def generate():
-                buffered: list[str] = []
-                state = {"decided": False, "live": False, "stopped": False}
-                queue: list[str] = []
+                """Stream deltas live while `claude` is still running.
 
-                def on_delta(chunk: str):
-                    """Forward text, but never let a tool-call payload reach the user.
+                run() is blocking, so it goes on a worker thread and hands
+                deltas back through a queue. The gate decides what is safe to
+                forward; a tool-call payload never is.
+                """
+                gate = StreamGate()
+                events: queuelib.Queue = queuelib.Queue()
+                box: dict = {}
 
-                    The model may open with prose ("Let me look that up.") and
-                    only then emit the fence, so the decision cannot be made
-                    once from the first chunk -- it has to stay revisable.
-                    Streaming stops the moment a payload starts; the prose
-                    already sent reads as a status line, which is harmless.
-                    """
-                    buffered.append(chunk)
-                    whole = "".join(buffered)
-                    if state["stopped"]:
-                        return
-                    if translate.payload_has_begun(whole):
-                        state["stopped"] = True
-                        return
-                    if not state["decided"]:
-                        if not whole.strip():
-                            return
-                        state["decided"] = True
-                        state["live"] = True
-                        queue.append(whole)
-                    else:
-                        queue.append(chunk)
+                def worker():
+                    try:
+                        box["result"] = run(
+                            settings, prompt, session_id, system_prompt,
+                            on_delta=lambda c: events.put(("delta", c)),
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        box["error"] = exc
+                    finally:
+                        events.put(("end", None))
 
                 with limiter.slot(session_key):
-                    result = run(settings, prompt, session_id, system_prompt,
-                                 on_delta=on_delta)
+                    thread = threading.Thread(target=worker, daemon=True)
+                    thread.start()
+                    while True:
+                        kind, value = events.get()
+                        if kind == "end":
+                            break
+                        piece = gate.accept(value)
+                        if piece:
+                            yield _sse(_chunk({"content": piece}))
+                    thread.join()
+
+                    err = box.get("error")
+                    result = box.get("result")
+                    if err is not None or result is None:
+                        yield _sse(_chunk({"content": f"relay error: {err}"}, "stop"))
+                        yield "data: [DONE]\n\n"
+                        return
                     if result.is_error:
                         yield _sse(_chunk({"content": result.text}, "stop"))
                         yield "data: [DONE]\n\n"
@@ -214,12 +224,9 @@ def create_app(settings: Settings, runner=None) -> FastAPI:
                         yield _sse(_chunk({"tool_calls": [{"index": i, **call}]}))
                     yield _sse(_chunk({}, "tool_calls"))
                 else:
-                    text = parsed.content or result.text
-                    if queue and "".join(queue) == text:
-                        for piece in queue:
-                            yield _sse(_chunk({"content": piece}))
-                    else:
-                        yield _sse(_chunk({"content": text}))
+                    remainder = gate.flush(parsed.content or result.text)
+                    if remainder:
+                        yield _sse(_chunk({"content": remainder}))
                     yield _sse(_chunk({}, "stop"))
 
                 _persist(result, parsed)

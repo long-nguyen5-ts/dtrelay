@@ -34,6 +34,9 @@ embedding adapter does not append it), key `dummy`, model
 
 - Subagent consults spawn outside the relay and share the plan window; keep
   `consult_budget` low.
+- Text streams live: first tokens reach the UI in ~5s while the model keeps
+  writing. A tool-call payload is never streamed, so a turn that calls a tool
+  shows nothing until the tool result comes back.
 - A cold call costs ~$0.16 (the agent system prompt is written to cache);
   resumed calls cost ~$0.013. Long conversations are cheap, many short ones
   are not.
