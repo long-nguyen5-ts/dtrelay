@@ -54,18 +54,20 @@ def test_unknown_tool_name_is_an_error():
     assert "nope" in r.error
 
 
-def test_arguments_failing_schema_are_an_error():
+def test_arguments_are_passed_through_unvalidated():
+    # DeepTutor normalises argument shapes its declared schema does not cover,
+    # so the relay must not reject them. The tool layer is the authority.
     r = parse_reply(
         '{"tool_calls":[{"name":"search_kb","arguments":{"query":123}}]}', TOOLS
     )
-    assert r.tool_calls is None
-    assert r.error
+    assert r.tool_calls
+    assert r.error is None
 
 
-def test_missing_required_argument_is_an_error():
+def test_a_missing_required_argument_is_still_passed_through():
     r = parse_reply('{"tool_calls":[{"name":"search_kb","arguments":{}}]}', TOOLS)
-    assert r.tool_calls is None
-    assert r.error
+    assert r.tool_calls
+    assert r.error is None
 
 
 def test_malformed_json_in_a_fence_is_an_error():

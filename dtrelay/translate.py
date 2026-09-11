@@ -13,7 +13,6 @@ import re
 import uuid
 from dataclasses import dataclass
 
-import jsonschema
 from json_repair import repair_json
 
 from dtrelay.sessions import _text
@@ -219,11 +218,15 @@ def parse_reply(text: str, tools: list[dict]) -> ParsedReply:
         args = call.get("arguments")
         if not isinstance(args, dict):
             return ParsedReply(error=f"arguments for {name!r} must be an object")
-        schema = by_name[name].get("parameters") or {}
-        try:
-            jsonschema.validate(args, schema)
-        except jsonschema.ValidationError as e:
-            return ParsedReply(error=f"arguments for {name!r} invalid: {e.message}")
+        # Arguments are deliberately NOT schema-validated here. DeepTutor's own
+        # tools normalise shapes the declared schema does not describe --
+        # ask_user accepts a legacy {question, options} form and camelCase keys
+        # -- so validating here rejected calls the destination would have
+        # accepted, and the user got a fallback message instead of their
+        # profile questions. The tool layer is the authority on its own
+        # arguments, and its error reaches the model with far better context
+        # than a blind corrective retry. Only the tool NAME is checked, since a
+        # name DeepTutor does not know cannot be dispatched at all.
         out.append({
             "id": f"call_{uuid.uuid4().hex[:24]}",
             "type": "function",

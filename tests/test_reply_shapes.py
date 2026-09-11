@@ -89,6 +89,7 @@ def test_unknown_tool_is_an_error():
     assert r.error
 
 
-def test_bad_arguments_are_an_error():
+def test_bad_arguments_are_passed_through_to_the_tool_layer():
     r = parse_reply('{"tool_calls":[{"name":"search_kb","arguments":{"q":9}}]}', TOOLS)
-    assert r.error
+    assert r.tool_calls
+    assert r.error is None
